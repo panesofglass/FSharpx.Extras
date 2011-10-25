@@ -56,6 +56,10 @@ module Monoid =
             override this.mempty = 1
             override this.mappend a b = a * b }
 
+    let inline mempty (x: ^a) = (^a : (static member op_Nil : unit -> 'a) ())
+    let inline mappend (x: ^a) y = (^a : (static member op_Append : 'a -> 'a -> 'a) (x, y))
+    let inline mconcat (x: ^a) y = Seq.fold mappend (mempty x) y
+
 /// Generic monadic operators    
 module Operators =
 

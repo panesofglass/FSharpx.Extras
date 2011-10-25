@@ -374,6 +374,7 @@ type BS =
     val Count: int
     new (array: byte[]) = { Array = array; Offset = 0; Count = array.Length }
     new (array: byte[], offset: int, count: int) = { Array = array; Offset = offset; Count = count }
+
     /// Compares two byte strings based on their structure.
     static member Compare (a:BS, b:BS) =
         let x,o,l = a.Array, a.Offset, a.Count
@@ -384,13 +385,16 @@ type BS =
             else if o < o' then -1 else 1 
         else let left, right = x.[o..(o+l-1)], x'.[o'..(o'+l'-1)] in
              if left = right then 0 elif left < right then -1 else 1
+
     /// Compares two objects for equality. When both are byte strings, structural equality is used.
     override x.Equals(other) = 
         match other with
         | :? BS as other' -> BS.Compare(x, other') = 0
         | _ -> false
+
     /// Gets the hash code for the byte string.
     override x.GetHashCode() = hash x
+
     /// Gets an enumerator for the bytes stored in the byte string.
     member x.GetEnumerator() =
         if x.Count = 0 then Enumerator.empty<_>
@@ -421,22 +425,82 @@ type BS =
                 member self.Reset() = currentIndex := minIndex - 1
               interface System.IDisposable with 
                 member self.Dispose() = () }
+
     interface System.IComparable with
         member x.CompareTo(other) =
             match other with
             | :? BS as other' -> BS.Compare(x, other')
             | _ -> invalidArg "other" "Cannot compare a value of another type."
+
     interface System.Collections.Generic.IEnumerable<byte> with
         /// Gets an enumerator for the bytes stored in the byte string.
         member x.GetEnumerator() = x.GetEnumerator()
         /// Gets an enumerator for the bytes stored in the byte string.
         member x.GetEnumerator() = x.GetEnumerator() :> IEnumerator
+
+    member x.IsEmpty = 
+        #if NET40
+        Contract.Requires(x.Count >= 0)
+        #else
+        Debug.Assert(bs.Count >= 0)
+        #endif
+        x.Count <= 0
+
+    member x.Item(pos) =
+        #if NET40
+        Contract.Requires(x.Offset + pos <= x.Count)
+        #else
+        Debug.Assert(bs.Offset + pos <= bs.Count)
+        #endif
+        x.Array.[x.Offset + pos]
+
+    member x.Head =
+        if x.Count <= 0 then
+          failwith "Cannot take the head of an empty byte string."
+        else x.Array.[x.Offset]
+
+    member x.Tail =
+        #if NET40
+        Contract.Requires(x.Count >= 1)
+        #else
+        Debug.Assert(bs.Count >= 1)
+        #endif
+        if x.Count = 1 then BS.op_Nil()
+        else BS(x.Array, x.Offset+1, x.Count-1)
+        
+    static member Empty = BS()
+
+    static member op_Nil() = BS.Empty
+    
+    /// cons uses Buffer.SetByte and Buffer.BlockCopy for efficient array operations.
+    /// Please note that a new array is created and both the head and tail are copied in,
+    /// disregarding any additional bytes in the original tail array.
+    static member op_Cons(hd, bs:BS) =
+        let x,o,l = bs.Array, bs.Offset, bs.Count in
+        if l = 0 then BS [|hd|]
+        else let buffer = Array.zeroCreate<byte> (l + 1)
+             Buffer.SetByte(buffer,0,hd)
+             Buffer.BlockCopy(x,o,buffer,1,l)
+             BS(buffer,0,l+1)
+    
+    /// append uses Buffer.BlockCopy for efficient array operations.
+    /// Please note that a new array is created and both arrays are copied in,
+    /// disregarding any additional bytes in the original, underlying arrays.
+    static member op_Append(x:BS, y:BS) = 
+        if x.IsEmpty then y
+        elif y.IsEmpty then x
+        else let x,o,l = x.Array, x.Offset, x.Count
+             let x',o',l' = y.Array, y.Offset, y.Count
+             let buffer = Array.zeroCreate<byte> (l + l')
+             Buffer.BlockCopy(x,o,buffer,0,l)
+             Buffer.BlockCopy(x',o',buffer,l,l')
+             BS(buffer,0,l+l')
   
 module ByteString =
     /// An active pattern for conveniently retrieving the properties of a BS.
     let (|BS|) (x:BS) = x.Array, x.Offset, x.Count
     
-    let empty = BS()
+    let empty = BS.Empty
     let singleton c = BS(Array.create 1 c, 0, 1)
     let create arr = BS(arr, 0, arr.Length)
     let findIndex pred (bs:BS) =
@@ -451,63 +515,21 @@ module ByteString =
     let toSeq (bs:BS) = bs :> seq<byte>
     let toList (bs:BS) = List.ofSeq bs
     let toString (bs:BS) = System.Text.Encoding.ASCII.GetString(bs.Array, bs.Offset, bs.Count)
-    let isEmpty (bs:BS) = 
-        #if NET40
-        Contract.Requires(bs.Count >= 0)
-        #else
-        Debug.Assert(bs.Count >= 0)
-        #endif
-        bs.Count <= 0
-    let length (bs:BS) = 
-        #if NET40
-        Contract.Requires(bs.Count >= 0)
-        #else
-        Debug.Assert(bs.Count >= 0)
-        #endif
-        bs.Count
-    let index (bs:BS) pos =
-        #if NET40
-        Contract.Requires(bs.Offset + pos <= bs.Count)
-        #else
-        Debug.Assert(bs.Offset + pos <= bs.Count)
-        #endif
-        bs.Array.[bs.Offset + pos]
-    let head (bs:BS) =
-        if bs.Count <= 0 then
-          failwith "Cannot take the head of an empty byte string."
-        else bs.Array.[bs.Offset]
-    let tail (bs:BS) =
-        #if NET40
-        Contract.Requires(bs.Count >= 1)
-        #else
-        Debug.Assert(bs.Count >= 1)
-        #endif
-        if bs.Count = 1 then empty
-        else BS(bs.Array, bs.Offset+1, bs.Count-1)
+    let isEmpty (bs:BS) = bs.IsEmpty
+    let length (bs:BS) = bs.Count
+    let index (bs:BS) pos = bs.[pos]
+    let head (bs:BS) = bs.Head
+    let tail (bs:BS) = bs.Tail
     
     /// cons uses Buffer.SetByte and Buffer.BlockCopy for efficient array operations.
     /// Please note that a new array is created and both the head and tail are copied in,
     /// disregarding any additional bytes in the original tail array.
-    let cons hd (bs:BS) =
-        let x,o,l = bs.Array, bs.Offset, bs.Count in
-        if l = 0 then singleton hd
-        else let buffer = Array.zeroCreate<byte> (l + 1)
-             Buffer.SetByte(buffer,0,hd)
-             Buffer.BlockCopy(x,o,buffer,1,l)
-             BS(buffer,0,l+1)
+    let cons hd (bs:BS) = BS.op_Cons(hd, bs)
     
     /// append uses Buffer.BlockCopy for efficient array operations.
     /// Please note that a new array is created and both arrays are copied in,
     /// disregarding any additional bytes in the original, underlying arrays.
-    let append a b = 
-        if isEmpty a then b
-        elif isEmpty b then a
-        else let x,o,l = a.Array, a.Offset, a.Count
-             let x',o',l' = b.Array, b.Offset, b.Count
-             let buffer = Array.zeroCreate<byte> (l + l')
-             Buffer.BlockCopy(x,o,buffer,0,l)
-             Buffer.BlockCopy(x',o',buffer,l,l')
-             BS(buffer,0,l+l')
+    let append b a = BS.op_Append(a, b)
     
     let fold f seed bs =
         let rec loop bs acc =
