@@ -207,7 +207,6 @@ module List =
             for j in l2 do
                 yield f i j ]
 
-  
     let span pred l =
         let rec loop l cont =
             match l with
@@ -368,6 +367,207 @@ module DList =
 
 /// An ArraySegment with structural comparison and equality.
 [<CustomEquality; CustomComparison; SerializableAttribute; StructAttribute>]
+type ArraySegment<'a when 'a : comparison> =
+    val Array: 'a[]
+    val Offset: int
+    val Count: int
+    new (array: 'a[]) = { Array = array; Offset = 0; Count = array.Length }
+    new (array: 'a[], offset: int, count: int) = { Array = array; Offset = offset; Count = count }
+
+    /// Compares two array segments based on their structure.
+    static member Compare (a:ArraySegment<_>, b:ArraySegment<_>) =
+        let x,o,l = a.Array, a.Offset, a.Count
+        let x',o',l' = b.Array, b.Offset, b.Count
+        if x = x' && o = o' && l = l' then 0
+        elif x = x' then
+            if o = o' then if l < l' then -1 else 1
+            else if o < o' then -1 else 1 
+        else let left, right = x.[o..(o+l-1)], x'.[o'..(o'+l'-1)] in
+             if left = right then 0 elif left < right then -1 else 1
+
+    /// Compares two objects for equality. When both are array segments, structural equality is used.
+    override x.Equals(other) = 
+        match other with
+        | :? ArraySegment<'a> as other' -> ArraySegment.Compare(x, other') = 0
+        | _ -> false
+
+    /// Gets the hash code for the array segment.
+    override x.GetHashCode() = hash x
+
+    /// Gets an enumerator for the contents stored in the array segment.
+    member x.GetEnumerator() =
+        if x.Count = 0 then Enumerator.empty<_>
+        else
+            let segment = x.Array
+            let minIndex = x.Offset
+            let maxIndex = x.Offset + x.Count - 1
+            let currentIndex = ref <| minIndex - 1
+            { new IEnumerator<_> with 
+                member self.Current =
+                    if !currentIndex < minIndex then
+                        invalidOp "Enumeration has not started. Call MoveNext."
+                    elif !currentIndex > maxIndex then
+                        invalidOp "Enumeration already finished."
+                    else segment.[!currentIndex]
+              interface System.Collections.IEnumerator with
+                member self.Current =
+                    if !currentIndex < minIndex then
+                        invalidOp "Enumeration has not started. Call MoveNext."
+                    elif !currentIndex > maxIndex then
+                        invalidOp "Enumeration already finished."
+                    else box segment.[!currentIndex]
+                member self.MoveNext() = 
+                    if !currentIndex < maxIndex then
+                        incr currentIndex
+                        true
+                    else false
+                member self.Reset() = currentIndex := minIndex - 1
+              interface System.IDisposable with 
+                member self.Dispose() = () }
+
+    interface System.IComparable with
+        member x.CompareTo(other) =
+            if other = null then 1
+            else
+                match other with
+                | :? ArraySegment<'a> as other' -> ArraySegment.Compare(x, other')
+                | _ -> -1
+
+    interface System.Collections.Generic.IEnumerable<'a> with
+        /// Gets an enumerator for the contents stored in the array segment.
+        member x.GetEnumerator() = x.GetEnumerator()
+        /// Gets an enumerator for the contents stored in the array segment.
+        member x.GetEnumerator() = x.GetEnumerator() :> IEnumerator
+
+    member x.IsEmpty = 
+        #if NET40
+        Contract.Requires(x.Count >= 0)
+        #else
+        Debug.Assert(x.Count >= 0)
+        #endif
+        x.Count <= 0
+
+    member x.Item(pos) =
+        #if NET40
+        Contract.Requires(x.Offset + pos <= x.Count)
+        #else
+        Debug.Assert(x.Offset + pos <= x.Count)
+        #endif
+        x.Array.[x.Offset + pos]
+
+    member x.Head =
+        if x.Count <= 0 then
+          failwith "Cannot take the head of an empty array segment."
+        else x.Array.[x.Offset]
+
+    member x.Tail =
+        #if NET40
+        Contract.Requires(x.Count >= 1)
+        #else
+        Debug.Assert(x.Count >= 1)
+        #endif
+        if x.Count = 1 then ArraySegment.op_Nil()
+        else ArraySegment<_>(x.Array, x.Offset+1, x.Count-1)
+        
+    static member Empty = ArraySegment<'a>()
+
+    static member op_Nil() = ArraySegment<'a>.Empty
+    
+    /// Please note that a new array is created and both the head and tail are copied in,
+    /// disregarding any additional contents in the original tail array.
+    static member op_Cons(hd, segment:ArraySegment<'a>) =
+        let x,o,l = segment.Array, segment.Offset, segment.Count in
+        if l = 0 then ArraySegment<'a>([|hd|])
+        else let buffer = Array.zeroCreate (l + 1)
+             Array.blit [|hd|] 0 buffer 0 1
+             Array.blit x o buffer 1 l
+             ArraySegment<'a>(buffer,0,l+1)
+    
+    /// Please note that a new array is created and both arrays are copied in,
+    /// disregarding any additional contents in the original, underlying arrays.
+    static member op_Append(x:ArraySegment<'a>, y:ArraySegment<'a>) = 
+        if x.IsEmpty then y
+        elif y.IsEmpty then x
+        else let x,o,l = x.Array, x.Offset, x.Count
+             let x',o',l' = y.Array, y.Offset, y.Count
+             let buffer = Array.zeroCreate<_> (l + l')
+             Array.blit x o buffer 1 l
+             Array.blit x' o' buffer l l'
+             ArraySegment<'a>(buffer,0,l+l')
+  
+module ArraySegment =
+    /// An active pattern for conveniently retrieving the properties of a ArraySegment<_>.
+    let (|Segment|) (x:ArraySegment<_>) = x.Array, x.Offset, x.Count
+    
+    let empty<'a> = ArraySegment.Empty
+    let singleton c = ArraySegment<_>(Array.create 1 c, 0, 1)
+    let create arr = ArraySegment<_>(arr, 0, arr.Length)
+    let findIndex pred (segment:ArraySegment<_>) =
+        Array.FindIndex(segment.Array, segment.Offset, segment.Count, Predicate<_>(pred))
+    let ofArraySegment (segment:ArraySegment<_>) = ArraySegment<_>(segment.Array, segment.Offset, segment.Count)
+    let ofSeq s = let arr = Array.ofSeq s in ArraySegment<_>(arr, 0, arr.Length)
+    let ofList l = ArraySegment<_>(Array.ofList l, 0, l.Length)
+    let ofString (s:string) = s.ToCharArray() |> Array.map byte |> create
+    let toArray (segment:ArraySegment<_>) =
+        if segment.Count = 0 then Array.empty<_>
+        else segment.Array.[segment.Offset..(segment.Offset + segment.Count - 1)]
+    let toSeq (segment:ArraySegment<_>) = segment :> seq<byte>
+    let toList (segment:ArraySegment<_>) = List.ofSeq segment
+    let toString (segment:ArraySegment<_>) = System.Text.Encoding.ASCII.GetString(segment.Array, segment.Offset, segment.Count)
+    let isEmpty (segment:ArraySegment<_>) = segment.IsEmpty
+    let length (segment:ArraySegment<_>) = segment.Count
+    let index (segment:ArraySegment<_>) pos = segment.[pos]
+    let head (segment:ArraySegment<_>) = segment.Head
+    let tail (segment:ArraySegment<_>) = segment.Tail
+    
+    /// cons uses Buffer.SetByte and Buffer.BlockCopy for efficient array operations.
+    /// Please note that a new array is created and both the head and tail are copied in,
+    /// disregarding any additional bytes in the original tail array.
+    let cons hd (segment:ArraySegment<_>) = ArraySegment.op_Cons(hd, segment)
+    
+    /// append uses Buffer.BlockCopy for efficient array operations.
+    /// Please note that a new array is created and both arrays are copied in,
+    /// disregarding any additional bytes in the original, underlying arrays.
+    let append b a = ArraySegment.op_Append(a, b)
+    
+    let fold f seed segment =
+        let rec loop segment acc =
+            if isEmpty segment then acc 
+            else let hd, tl = head segment, tail segment
+                 loop tl (f acc hd)
+        loop segment seed
+  
+    let split pred (segment: ArraySegment<_>) =
+        if isEmpty segment then empty, empty
+        else let index = findIndex pred segment
+             if index = -1 then segment, empty
+             else let count = index - segment.Offset
+                  ArraySegment<_>(segment.Array, segment.Offset, count),
+                  ArraySegment<_>(segment.Array, index, segment.Count - count)
+    
+    let span pred segment = split (not << pred) segment
+    
+    let splitAt n (segment:ArraySegment<_>) =
+        #if NET40
+        Contract.Requires(n >= 0)
+        #else
+        Debug.Assert(n >= 0)
+        #endif
+        if isEmpty segment then empty, empty
+        elif n = 0 then empty, segment
+        elif n >= segment.Count then segment, empty
+        else let x,o,l = segment.Array, segment.Offset, segment.Count in ArraySegment<_>(x,o,n), ArraySegment<_>(x,o+n,l-n)
+    
+    let skip n segment = splitAt n segment |> snd
+    let skipWhile pred segment = span pred segment |> snd
+    let skipUntil pred segment = split pred segment |> snd
+    let take n segment = splitAt n segment |> fst 
+    let takeWhile pred segment = span pred segment |> fst
+    let takeUntil pred segment = split pred segment |> fst 
+
+
+/// An ArraySegment of bytes with structural comparison and equality.
+[<CustomEquality; CustomComparison; SerializableAttribute; StructAttribute>]
 type BS =
     val Array: byte[]
     val Offset: int
@@ -428,9 +628,11 @@ type BS =
 
     interface System.IComparable with
         member x.CompareTo(other) =
-            match other with
-            | :? BS as other' -> BS.Compare(x, other')
-            | _ -> invalidArg "other" "Cannot compare a value of another type."
+            if other = null then 1
+            else
+                match other with
+                | :? BS as other' -> BS.Compare(x, other')
+                | _ -> -1
 
     interface System.Collections.Generic.IEnumerable<byte> with
         /// Gets an enumerator for the bytes stored in the byte string.
@@ -442,7 +644,7 @@ type BS =
         #if NET40
         Contract.Requires(x.Count >= 0)
         #else
-        Debug.Assert(bs.Count >= 0)
+        Debug.Assert(x.Count >= 0)
         #endif
         x.Count <= 0
 
@@ -450,7 +652,7 @@ type BS =
         #if NET40
         Contract.Requires(x.Offset + pos <= x.Count)
         #else
-        Debug.Assert(bs.Offset + pos <= bs.Count)
+        Debug.Assert(x.Offset + pos <= x.Count)
         #endif
         x.Array.[x.Offset + pos]
 
@@ -463,7 +665,7 @@ type BS =
         #if NET40
         Contract.Requires(x.Count >= 1)
         #else
-        Debug.Assert(bs.Count >= 1)
+        Debug.Assert(x.Count >= 1)
         #endif
         if x.Count = 1 then BS.op_Nil()
         else BS(x.Array, x.Offset+1, x.Count-1)
