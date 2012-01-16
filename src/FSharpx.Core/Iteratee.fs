@@ -1,4 +1,4 @@
-﻿namespace FSharpx
+﻿module FSharpx.Iteratee
 #nowarn "40"
 
 open System.Collections
@@ -136,7 +136,7 @@ An iteratee is based on the `fold` operator with two differences:
 2. The iteratee does not pull data but receives chunks of data from an "enumerator". It returns a continuation to receive and process the next chunk. This means that an iteratee may be paused at any time, either by neglecting to pass it any additional data or by passing an Empty chunk.
 
 *)
-module Iteratee =
+module Iter =
     open FSharpx
     open FSharpx.Monoid
     
@@ -162,6 +162,22 @@ module Iteratee =
             | Empty -> true
             | Chunk s when ArraySegment.isEmpty s -> true
             | _ -> false
+
+    exception IterExpectedException of (string * string) list
+    exception IterParseException of string
+
+    type IterFail =
+        | IterException of exn
+        | IterExpected of IterExpectedException
+        | IterEOFError of System.IO.IOException
+        | IterParseError of IterParseException
+        with
+        member x.Exception =
+            match x with
+            | IterException e -> e
+            | IterExpected e -> e :> exn
+            | IterEOFError e -> e :> exn
+            | IterParseError e -> e :> exn
     
     /// The iteratee is a stream consumer that will consume a stream of data until either 
     /// it receives an EOF or meets its own requirements for consuming data. The iteratee
@@ -170,12 +186,12 @@ module Iteratee =
     type Iteratee<'el,'a when 'el : comparison> = Stream<'el> -> IterResult<'el,'a>
     and IterResult<'el,'a when 'el : comparison> =
         | Done of 'a * Stream<'el>
-        | Error of exn * 'a option * Stream<'el> option
+        | Error of IterFail * 'a option * Stream<'el> option
         | Continue of Iteratee<'el,'a>
     
-    let returnI a : Iteratee<_,_>  = fun s -> Done(a,s)
+    let returnI a : Iteratee<_,_> = fun s -> Done(a,s)
     let empty<'a when 'a : comparison> : Iteratee<'a,_> = returnI ()
-    let throwI e  : Iteratee<_,_>  = fun s -> Error(e, None, Some s)
+    let throwI e : Iteratee<_,_> = fun s -> Error(IterException e, None, Some s)
 
     // TODO: re-apply fix
     let rec bind (f:'a -> Iteratee<'b,'c>) (m:Iteratee<'b,'a>) : Iteratee<'b,'c> =
@@ -193,7 +209,7 @@ module Iteratee =
         match m EOF with
         | Done(a,_)    -> a
         | Continue i   -> run i
-        | Error(e,_,_) -> raise e
+        | Error(e,_,_) -> raise e.Exception
 
     let rec runR = function
         | Done(a,_)    -> Done(a, Empty)
@@ -255,7 +271,7 @@ module Iteratee =
 
     let tryEOFI i =
         let check = function
-            | Error(e, _, s) when (e :? System.IO.EndOfStreamException) -> Done(None, defaultArg s Empty)
+            | Error(IterEOFError _, _, s) -> Done(None, defaultArg s Empty)
             | _ as r -> fmapR Some r
         onDone check i
 
@@ -280,7 +296,7 @@ module Iteratee =
 
     let runI (i: Iteratee<_,_>) : Iteratee<_,_> = runIterR <| runR (i EOF)
 
-    let tryCatch handler m = catchI m <| fun e _ -> handler e
+    let tryCatch handler m = catchI m <| fun e _ -> handler e.Exception
 
     let tryFinally compensation (m:Iteratee<_,_>) : Iteratee<_,_> =
         let rec step m = fun s ->
@@ -317,6 +333,8 @@ module Iteratee =
     let inline ap m f = f <*> m
     let inline map f m = m >>= fun x -> returnM (f x)
     let inline (<!>) f m = map f m
+    let inline replace x m = (map << konst) x m
+    let inline (<! ) x m = replace x m
     let inline lift2 f a b = returnM f <*> a <*> b
     /// Sequence actions, discarding the value of the first argument.
     let inline ( *>) x y = lift2 (fun _ z -> z) x y
@@ -352,13 +370,16 @@ module Iteratee =
 
 module Inum =
     open FSharpx
-    open Iteratee
+    open Iter
     
-    /// An enumeratee is an enumerator that produces an iteratee using another iteratee as input.
-    /// Enumeratees can be used for tasks such as encoding or encrypting data.
+    // An inum, or enumeratee, is an enumerator that produces an iteratee using another iteratee as input.
+    // Inums can be used for tasks such as encoding or encrypting data.
+    // Inums can be compared in some ways to the ISubject in the Reactive Extensions.
     type Inum<'eli,'elo,'a when 'eli : comparison and 'elo : comparison> = Iteratee<'elo,'a> -> Iteratee<'eli, IterResult<'elo,'a>>
 
-    /// An enumerator generates a stream of data and feeds an iteratee, returning a new iteratee.
+    // An onum, or enumerator, generates a stream of data and feeds an iteratee, returning a new iteratee.
+    // Onums produce values rather than consuming them from another source.
+    // Thus Onums are similar in some ways to Enumerators or Observables.
     type Onum<'el,'a when 'el : comparison> = Inum<unit,'el,'a>
 
     let joinR (ir:IterResult<'eli,IterResult<'elo,'a>>) : IterResult<'eli,'a> =
@@ -368,18 +389,20 @@ module Inum =
         | Error(e,Some i,s) ->
             flip onDoneR (runR i) <| fun r ->
                 match r with
-                | Done(a,_) -> Error(e,Some a, s)
+                | Done(a,_) -> Error(e,Some a,s)
                 | Error(e',a,_) -> Error(e',a,s)
                 | _ -> failwith "joinR"
         | _ -> failwith "joinR: not done"
 
-    let leftAssociativePipe (outer:Inum<'eli,'elo,'a>) (inner:'i -> Iteratee<'elo,'a>) : 'i -> Iteratee<'eli,'a> =
+    // Left-associative pipe.
+    let pipe (outer:Inum<'eli,'elo,'a>) (inner:'i -> Iteratee<'elo,'a>) : 'i -> Iteratee<'eli,'a> =
         fun i -> onDone joinR <| outer (inner i)
-    let inline (|.) outer inner = leftAssociativePipe outer inner
+    let inline (|.) outer inner = pipe outer inner
 
-    let rightAssociativePipe (inum:Inum<'eli,'elo,'a>) (iter:Iteratee<'elo,'a>) : Iteratee<'eli,'a> =
+    // Right-associative pipe.
+    let pipeR (inum:Inum<'eli,'elo,'a>) (iter:Iteratee<'elo,'a>) : Iteratee<'eli,'a> =
         onDone joinR <| inum iter
-    let inline (.|) inum iter = rightAssociativePipe inum iter
+    let inline (.|) inum iter = pipeR inum iter
 
     // Run the onum on the iteratee, passing EOF at the end to immediately return the result.
     let runOnum (onum: Onum<_,_>) iter = run (onum .| iter)
@@ -401,4 +424,104 @@ module Inum =
     let lazyCat (a: Inum<'a,'b,'c>) (b: Inum<'a,'b,'c>) : Inum<'a,'b,'c> = 
         let check r = if isIterActive r then b <| reRunIter r else returnI r in
         fun iter -> tryRI (a iter) >>= either check reRunIter
+
+module Parse =
+    open Iter
+    open Inum
+
+    let throwParseI parseException = fun s _ -> Error(IterParseError parseException, None, None)
+
+    let iterEOF message = IterEOFError(System.IO.IOException(message))
+
+    let iterParse message = IterParseError(IterParseException(message) :?> IterParseException)
+
+    let iterExpected expectations = IterExpected(IterExpectedException(expectations) :?> IterExpectedException)
+
+    let catchPI iter handler =
+        let failed r =
+            match r with Error(IterException _, _, _) -> reRunIter r
+                       | Error(ifail, _, _)           -> handler ifail.Exception
+                       | _                            -> failwith "catchPI"
+        tryRI iter >>= either returnM failed
+
+    let combineExpected a b =
+        match a, b with
+        | _, Done(_,_) -> b
+        | IterExpected(e1), Error(IterExpected(e2), _, _) ->
+            Error(iterExpected(e1.Data0 @ e2.Data0), None, None)
+        | _, Error(IterExpected _, _, _) -> b
+        | e, _ -> Error(e, None, None)
+
+    let rec multiParse a b =
+        let rec check a b =
+            match a, b with
+            | Done(_,_), _ -> a
+            | Continue ia, Continue ib -> Continue <| multiParse ia ib
+            | Continue ia, Error(e,ma,_) -> Continue <| multiParse ia (fun s -> Error(e, ma, None))
+            | Continue ia, rb -> Continue <| onDoneInput (fun ra c -> check ra (runIterR rb c)) ia
+            | ra, rb -> stepR ra (flip check rb)
+                        <| match ra with
+                           | Error(e,_,_) -> onDoneR (combineExpected e) rb
+                           | _ -> failwith "multiParse"
+        fun s -> check (a s) (b s)
+    let inline (<|>) a b = multiParse a b
+
+    let inline ifParse iter yes no =
+        let check = function Choice1Of2 a -> yes a
+                           | Choice2Of2 (IterException e) -> throwI e
+                           | Choice2Of2 e -> onDone (combineExpected e) no
+        tryFBI iter >>= check
+    let inline ifNoParse iter no yes = ifParse iter yes no
+
+    let expectedI saw target =
+        let e = IterExpectedException [(saw, target)] :?> IterExpectedException
+        fun s _ -> Error(IterExpected e, None, None)
+
+    let internal innerFoldBack (acc0: 'b -> 'b) (f: 'a -> 'b -> 'b) (z: 'b) (iter: Iteratee<'c,'a>) =
+        let rec loop acc =
+            ifNoParse iter (returnM (acc z)) <| fun a -> loop (acc << f a)
+        loop acc0
+
+    // Fold back.
+    let foldBack f z iter = innerFoldBack id f z iter
+
+    // Fold back that will fail if the iteratee does not succeed at least once.
+    let foldBack1 f z iter = iter >>= fun a -> innerFoldBack (f a) f z iter
+
+    // Left fold.
+    let fold f z0 iter =
+        let rec foldNext z =
+            flip konst z <| ifNoParse iter (returnM z) <| fun a -> foldNext (f z a)
+        foldNext z0
+
+    // Left fold that will fail if the iteratee does not succeed at least once.
+    let fold1 f z iter = iter >>= fun a -> fold f (f z a) iter
+
+    // Discard the result of the iteratee or throw an error if the iteratee fails.
+    let skip m = () <! m
+
+    // Discard the result of the iteratee or rewind the input if the iteratee fails.
+    let optional iter = ifParse iter (konst <| returnM ()) (returnM ())
+
+    let rec ensure test =
+        let testFail = Error (iterParse "ensure test failed", None, None)
+        let eofFail = Error (iterEOF "ensure EOF", None, None)
+        function
+        | EOF -> eofFail
+        | Chunk t when ArraySegment.isEmpty t ->
+            if test (ArraySegment.head t) then
+                Done((), Chunk t)
+            else testFail
+        | _ -> Continue <| ensure test
+
+    let skipWhile test =
+        let rec loop =
+            function
+            | Chunk t ->
+                let t1 = ArraySegment.skipWhile test t
+                if ArraySegment.isEmpty t1 then
+                    Continue loop
+                else Done((), Chunk t1)
+            | s -> Done((), s)
+        loop
 
