@@ -81,3 +81,55 @@ type ReplaySubject<'T> (bufferSize:int) =
         member this.Subscribe observer = subscribe observer
 
 and Subject<'T>() = inherit ReplaySubject<'T>(0)
+
+open FSharpx
+
+type Stream =
+    | Chunk of BS
+    | EOF
+
+type IterResult<'a> =
+    | Done of 'a
+    | Fail of exn
+    | Continue of (Stream -> IterResult<'a>)
+
+type Iteratee<'a>(step: Stream -> IterResult<'a>) =
+    let mutable step = step
+    let mutable state = Unchecked.defaultof<'a>
+    let mutable isCompleted = false
+
+    let agent = BufferAgent.start 0
+    let subscribe observer =
+        observer |> Add |> agent.Post
+        { new System.IDisposable with
+            member this.Dispose () =
+                observer |> Remove |> agent.Post
+        }
+
+    member this.OnNext value =
+        if not isCompleted then
+            match step value with
+            | Done v ->
+                state <- v
+                this.OnCompleted ()
+            | Fail e -> this.OnError e
+            | Continue s -> step <- s
+
+    member this.OnError error =
+        if not isCompleted then
+            isCompleted <- true
+            Error error |> agent.Post
+
+    member this.OnCompleted () =
+        if not isCompleted then
+            isCompleted <- true
+            Next state |> agent.Post
+            Completed  |> agent.Post
+
+    member this.Subscribe(observer:System.IObserver<'a>) = subscribe observer
+
+    interface ISubject<Stream, 'a> with
+        member this.OnNext value = this.OnNext value
+        member this.OnError error = this.OnError error
+        member this.OnCompleted () = this.OnCompleted ()
+        member this.Subscribe observer = subscribe observer
