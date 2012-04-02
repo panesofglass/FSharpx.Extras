@@ -67,6 +67,7 @@
     <Compile Include="Observable.fs" />
     <Compile Include="AsyncSeq.fs" />
     <Compile Include="Async.IO.fs" />
+    <Compile Include="Pipe.fs" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="FSharp.Core" Condition="$(TargetFrameworkVersion) == 'v3.5'">
