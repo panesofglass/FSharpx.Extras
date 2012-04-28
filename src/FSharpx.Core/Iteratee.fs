@@ -4,6 +4,7 @@
 open System
 open System.Collections
 open System.Collections.Generic
+open FSharp.Control
 
 (*
 # Iteratee
@@ -595,3 +596,16 @@ module Iteratee =
                     else step (k (Chunk(ByteString.ofString line)))
                 | _ -> i
             step i
+
+        // This will allow us a fair performance comparison with iteratee.
+        // Note that this isn't a true Enumerator, as the result is now in an Async<_>.
+        let rec enumerateAsyncChunk aseq i = async {
+          let! res = aseq
+          match res with
+          | AsyncSeqInner.Nil -> return i
+          | Cons(s1, s2) -> 
+              match i with
+              | Iteratee.Done(_,_) -> return i
+              | Iteratee.Continue k -> return! enumerateAsyncChunk s2 (k (Chunk s1))
+              | _ -> return i
+        }

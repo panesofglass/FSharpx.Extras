@@ -61,7 +61,6 @@
     <Compile Include="PokerDistributionTest.fs" />
     <Compile Include="IterateeTest.fs" />
     <Compile Include="ListIterateeTest.fs" />
-    <Compile Include="BinaryIterateeTest.fs" />
     <Compile Include="ValidationTests.fs" />
     <Compile Include="ValidationExample.fs" />
     <Compile Include="ZipListTests.fs" />
@@ -74,6 +73,8 @@
     <Compile Include="LensExample.fs" />
     <Compile Include="TimeMeasurementTests.fs" />
     <Compile Include="RegexTests.fs" />
+    <Compile Include="BinaryIterateeTest.fs" />
+    <Compile Include="PipesTest.fs" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="FsCheck">
