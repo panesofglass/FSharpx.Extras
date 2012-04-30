@@ -61,7 +61,7 @@ type SinkResult<'r> =
 ////type Sink'<'r> = Pipe<Data, 'r>
 ////type Conduit = Pipe<Data, AsyncSeqInner<BS>>
 //
-//let connect (source: Source) (sink: Sink<_>) : Async<'r * Source> =
+//let pipe (source: Source) (sink: Sink<_>) : Async<'r * Source> =
 //  let rec loop source = async {
 //    let! next = source
 //    match next with
@@ -87,7 +87,7 @@ type SinkResult<'r> =
 //  }
 //  loop source
 
-//let connect sink (source: seq<BS>) : 'r * seq<BS> =
+//let pipe sink (source: seq<BS>) : 'r * seq<BS> =
 //  let rec loop (source: IEnumerator<BS>) (sink: Sink<_>) =
 //    if not <| source.MoveNext() then
 //      // TODO: Close the source's resources.
@@ -290,7 +290,7 @@ module Sink =
       | Chunk x ->
         let c, t = ByteString.head str, ByteString.tail str
         let c', t' = ByteString.head x, ByteString.tail x
-        if c = c' then step (count + 1) t (Chunk t') 
+        if c = c' && not <| ByteString.isEmpty t then step (count + 1) t (Chunk t')
         else Done(count, x)
       // TODO: | EOF xs when ByteString.isEmpty xs ->
       | EOF xs -> Done(count, xs)

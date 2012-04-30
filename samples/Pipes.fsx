@@ -24,16 +24,18 @@ let makeSource() = asyncSeq {
   yield BS"\r\n\r\n"B
 }
 
-Async.StartWithContinuations(connect (makeSource()) (length()), fst >> printfn "Result of length is %d", ignore, ignore)
+Async.StartWithContinuations(Sink.length (makeSource()), fst >> printfn "Result of length is %d", ignore, ignore)
 
 // compare with iteratee version:
 Async.StartWithContinuations(enumerateAsyncChunk (makeSource()) Iteratee.Binary.length, run >> printfn "Result of iteratee length: %d", ignore, ignore)
 
 let comp =
   let source = makeSource()
-  async {
-    let! (_, source') = connect source (skip 10)
-    return! connect source' (length()) }
+  let snk = Sink.sink {
+    do! Sink.skip 10
+    return! Sink.length
+  }
+  snk source
 
 Async.StartWithContinuations(comp, fst >> printfn "Result of comp is %d", ignore, ignore)
 

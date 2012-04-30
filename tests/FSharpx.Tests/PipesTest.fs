@@ -3,16 +3,15 @@
 open System
 open FSharp.Control
 open FSharpx
-open FSharpx.ByteString
 open FSharpx.Pipes
 open NUnit.Framework
 open FsUnit
 
-let run src snk = connect (AsyncSeq.ofSeq src) snk |> Async.RunSynchronously
+let run snk src = snk (AsyncSeq.ofSeq src) |> Async.RunSynchronously
 
 [<Test>]
 let ``test length should calculate the length of the list without modification``() =
-  let actual, _ = run [ByteString.create [|1uy;2uy;3uy|]] length
+  let actual, _ = run Sink.length [BS"123"B]
   actual |> should equal 3
 
 //let testPeekAndHead = [|
