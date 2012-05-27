@@ -419,6 +419,12 @@ module Iteratee =
             | x::xs, Continue k -> enumerate xs (k (Chunk [x]))
             | _ -> i
 
+        let rec connect sink source =
+            match sink, source with
+            | Continue k, s1::s2 ->
+                connect (k (Chunk s1)) s2
+            | _ -> run sink, source
+
     module Binary =
         open Operators
 
@@ -577,35 +583,15 @@ module Iteratee =
                  | Continue k -> let x, xs = ByteString.head str, ByteString.tail str in enumerate xs (k (Chunk (ByteString.singleton x)))
                  | _ -> i
 
-        let enumStream bufferSize (stream:#System.IO.Stream) i =
-            let buffer = Array.zeroCreate<byte> bufferSize
-            let rec step = function Continue k -> read k | i -> i
-            and read k =
-                let result = stream.Read(buffer, 0, bufferSize) in
-                if result = 0 then Continue k
-                else step (k (Chunk(BS(buffer,0,result))))
-            step i
-
-        let enumStreamReader (reader:#System.IO.TextReader) i =
-            let rec step i =
-                match i with
-                | Done(_,_) -> i
-                | Continue k ->
-                    let line = reader.ReadLine()
-                    if line = null then i
-                    else step (k (Chunk(ByteString.ofString line)))
-                | _ -> i
-            step i
-
-        // This will allow us a fair performance comparison with iteratee.
-        // Note that this isn't a true Enumerator, as the result is now in an Async<_>.
-        let rec enumerateAsyncChunk aseq i = async {
-          let! res = aseq
-          match res with
-          | AsyncSeqInner.Nil -> return i
-          | Cons(s1, s2) -> 
-              match i with
-              | Iteratee.Done(_,_) -> return i
-              | Iteratee.Continue k -> return! enumerateAsyncChunk s2 (k (Chunk s1))
-              | _ -> return i
+        // TODO: Both source and sink should include a close function or IDisposable.
+        // NOTE: source and sink could implement IObservable and IObserver, respectively, though that could be misleading as they are intended to be used together.
+        let rec connect sink source = async {
+            match sink with
+            // Delay pulling from the source until we know that the sink needs data.
+            | Continue k ->
+                let! res = source
+                match res with
+                | AsyncSeqInner.Nil -> return run sink, AsyncSeq.empty
+                | Cons(s1, s2) -> return! connect (k (Chunk s1)) s2
+            | _ -> return run sink, source
         }

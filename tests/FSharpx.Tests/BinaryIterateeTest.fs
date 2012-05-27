@@ -1,6 +1,7 @@
 module FSharpx.Tests.BinaryIterateeTest
 
 open System
+open FSharp.Control
 open FSharpx
 open FSharpx.ByteString
 open FSharpx.Iteratee
@@ -319,6 +320,23 @@ let ``test readLines should return the lines from the input when chunked``(input
   let actual = enumeratePureNChunk 5 input readLines |> run
   actual |> should equal expected
 
+[<Test>]
+[<TestCaseSource("readLinesTests")>]
+let ``test readLines should return the lines from the input when connected``(input, expected:BS list) =
+  let source = asyncSeq { yield ByteString.ofString input }
+  Async.StartWithContinuations(connect readLines source, fst >> should equal expected, ignore, ignore)
+
+[<Test;Ignore>]
+[<TestCaseSource("readLinesTests")>]
+let ``test readLines should return the lines from the input when connected and chunked``(input, expected:BS list) =
+  let input = ByteString.ofString input
+  let rec split bs = asyncSeq {
+      if ByteString.isEmpty input then yield bs else
+      let bs1, bs2 = ByteString.splitAt 5 bs
+      yield bs1
+      yield! split bs2
+  }
+  Async.StartWithContinuations(split input |> connect readLines, fst >> should equal expected, ignore, ignore)
 
 (* CSV Parser *)
 

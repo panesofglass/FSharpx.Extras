@@ -311,6 +311,25 @@ let ``test readLines should return the lines from the input when chunked``(input
   let actual = enumeratePureNChunk 5 input readLines |> run
   actual |> should equal expected
 
+[<Test>]
+[<TestCaseSource("readLinesTests")>]
+let ``test readLines should return the lines from the input when connected``(input, expected:String list) =
+  let source = [List.ofSeq input]
+  let actual, source' = connect readLines source
+  actual |> should equal expected
+
+[<Test>]
+[<TestCaseSource("readLinesTests")>]
+let ``test readLines should return the lines from the input when connected and chunked``(input, expected:String list) =
+  let input = List.ofSeq input
+  let rec split str = [
+      match str with
+      | [] -> yield []
+      | _ -> let str1, str2 = List.splitAt 5 str in yield str1; yield! split str2
+  ]
+  let source = split input
+  let actual, source' = connect readLines source
+  actual |> should equal expected
 
 (* CSV Parser *)
 
